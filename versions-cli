@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import argparse
+import yaml
+import json
+import inspect
+import sys
+import os
+import pprint
+import requests
+from distutils.version import LooseVersion
+
+try:
+    from packaging.version import parse
+except ImportError:
+    from pip._vendor.packaging.version import parse
+
+
+class VersionsCtl():
+    def __init__(self):
+        self._load()
+
+    def _load(self):
+
+        versions_file_path = None
+        if "VERSIONS_FILE" in os.environ:
+            versions_file_path = os.environ['VERSIONS_FILE']
+        else:
+            versions_file_path = os.path.join('', *[os.environ['WORK_WORKSPACES_PATH'], "gitlab.com",
+                                                    "jvautier", "dev", "versions.yml"])
+
+        self._versions = yaml.safe_load(open(versions_file_path))
+
+    def _write(self):
+
+        with open(os.environ['VERSIONS_FILE'], 'w') as outfile:
+            yaml.safe_dump(self._versions, outfile, encoding='utf-8',
+                           allow_unicode=True)
+
+    def get_version(self, key, **kwargs):
+        real_key = key + "_version"
+        content = self._versions[real_key]
+        result = ''
+        if kwargs.get('format') == 'yaml':
+            # print('toto', key, self._versions[real_key])
+            result = "{0}={1}".format(key, self._versions[real_key])
+        if kwargs.get('format') == 'raw':
+            result = self._versions[real_key]
+        if kwargs.get('format') == 'export':
+            result = "export {0}=\"{1}\"".format(real_key.upper(), content)
+
+        return result
+
+    def set_version(self, key, value, **kwargs):
+        real_key = key + "_version"
+        previous_value = self.get_version(key)
+        if previous_value != value:
+            self._versions[real_key] = value
+            self._write()
+            return 'changed'
+        else:
+            return 'no change'
+
+    def list(self, format, **kwargs):
+        result_map = {}
+        result_export = ""
+        for app_name_full in self._versions:
+            app_name = app_name_full.replace('_version', '')
+            print('getting', app_name)
+            result_map[app_name] = self.get_version(app_name, format='raw')
+            result_export += self.get_version(app_name, format='export') + '\n'
+        result = ""
+        if format == "export":
+            result = result_export
+        if format == "raw":
+            result = result_map
+        if format == "json":
+            result = json.dumps(result_map, indent=2)
+        if format == "yaml" or format == "yml":
+            result = yaml.dump(result_map, default_flow_style=False)
+
+        return result
+
+    def check_version(self, name, type, **kwargs):
+        result = None
+        # app = self._versions[name + '_version']
+        # app_version = self._versions.get(name, format='raw')
+
+        def github(name, **kwargs):
+
+            # r = requests.get(request_url, auth=(
+            # 'jonathan.vautier@gmail.com', '4b963970c985568b53b30682321ffcb6295bb2a1'))
+            # releases = []
+            # r = _recursive_gh_get(
+            #     "https://api.github.com/repos/{}/tags".format(name), releases)
+            r = requests.get(
+                "https://api.github.com/repos/{}/releases/latest".format(name), auth=(
+                    'jonathan.vautier@gmail.com', '4b963970c985568b53b30682321ffcb6295bb2a1'))
+            # print(r.json())
+            release = r.json()
+            r.raise_for_status()
+            return release.get('tag_name').replace('v', '')
+            # releases = list(filter(None, releases))
+            # d = [release.get('tag_name') for release in releases]
+            # return d
+            # return []
+
+        def pypy(package_name, **kwargs):
+            version = parse('0')
+            r = requests.get(
+                "https://pypi.python.org/pypi/{}/json".format(package_name))
+            releases = r.json().get('releases', [])
+            # releases = releases.get('versions', [])
+            releases = list(filter(None, releases))
+            # print(releases)
+            for release in releases:
+                ver = parse(release)
+                if kwargs.get('channel', 'stable') == 'prerelease':
+                    version = max(version, ver)
+                else:
+                    if not ver.is_prerelease:
+                        version = max(version, ver)
+            return version
+
+        def hashicorp(name, **kwargs):
+            r = requests.get(
+                'https://releases.hashicorp.com/index.json')
+            releases = r.json().get(name)
+            versions = releases.get('versions', [])
+            versions = list(filter(None, versions))
+            if kwargs.get('channel', 'stable') == 'stable':
+                versions = [
+                    k for k in versions if ('alpha' or 'beta' or 'rc') not in k
+                ]
+                versions = [
+                    k for k in versions if 'beta' not in k
+                ]
+                versions = [
+                    k for k in versions if 'rc' not in k
+                ]
+            if kwargs.get('channel', None) != 'stable':
+                versions = [
+                    k for k in versions if kwargs.get('channel') in k
+                ]
+            # print(versions)
+            versions.sort(key=LooseVersion)
+            if len(versions) > 0:
+                return versions[-1]
+            else:
+                return ''
+
+        if type == 'pypy':
+            return pypy(name, **kwargs)
+        if type == 'github':
+            return github(name, **kwargs)
+        if type == 'hashicorp':
+            return hashicorp(name, **kwargs)
+
+    def parse(self):
+        parser = argparse.ArgumentParser(description='versions-ctl')
+        actions = parser.add_subparsers(
+            title="action",
+            description="action desc",
+            prog="prog",
+            dest="action",
+            help="action help"
+        )
+
+        list_action = actions.add_parser("list")
+        list_action.add_argument('-f', '--format')
+        list_action.set_defaults(format="yaml")
+        list_action.set_defaults(func=self.list)
+
+        get_action = actions.add_parser("get")
+        get_action.add_argument('-k', '--key', required=True)
+        get_action.add_argument('-f', '--format')
+        get_action.set_defaults(format="raw")
+        get_action.set_defaults(func=self.get_version)
+
+        latest_action = actions.add_parser("latest")
+        latest_action.add_argument('-n', '--name', required=True)
+        latest_action.add_argument('-t', '--type', required=True)
+        latest_action.add_argument('-c', '--channel')
+        latest_action.set_defaults(func=self.check_version)
+        latest_action.set_defaults(channel='stable')
+
+        set_action = actions.add_parser("set")
+        set_action.add_argument('-k', '--key', required=True)
+        set_action.add_argument('-v', '--value', required=True)
+        set_action.set_defaults(func=self.set_version)
+
+        args = parser.parse_args(sys.argv[1:])
+
+        if args.action == None:
+            parser.print_help()
+            exit(1)
+
+        argspec = inspect.getfullargspec(args.func)
+        if argspec.varkw or argspec.defaults or argspec.kwonlyargs or argspec.kwonlydefaults:
+            # convert args to a dictionary
+            args_for_func = vars(args)
+        else:
+            # get a subset of the dictionary containing just the arguments of func
+            args_for_func = {k: getattr(args, k) for k in argspec.args}
+
+        result = args.func(**args_for_func)
+        if result != None:
+            print(result)
+            # pp = pprint.PrettyPrinter(indent=2)
+            # pp.pprint(result)
+
+
+def main():
+    ctl = VersionsCtl()
+    ctl.parse()
+
+
+if __name__ == '__main__':
+    main()
