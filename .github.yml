@@ -5,4 +5,7 @@ description: Fetch github, pipy or hashicorp product versions
 tags:
   - api
   - cli
-github: {}
+github:
+  has_issues: true
+  has_projects: false
+  has_wiki: false
