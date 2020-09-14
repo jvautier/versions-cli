@@ -1,0 +1,7 @@
+---
+fullname: jvautier/versions-cli
+description: Fetch github, pipy or hashicorp product versions
+tags:
+  - api
+  - cli
+github: {}
