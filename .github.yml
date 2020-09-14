@@ -1,4 +1,5 @@
 ---
+# See https://github.com/jvautier/project-cli
 fullname: jvautier/versions-cli
 description: Fetch github, pipy or hashicorp product versions
 tags:
